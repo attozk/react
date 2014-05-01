@@ -1,5 +1,5 @@
 <?php
-namespace React\Helper;
+namespace React\Smtp\Helper;
 
 /**
  * Email Helper & parser class
@@ -65,7 +65,7 @@ class Emailper
      *
      * @param string $email
      */
-    public static function getDomainFromEmailAddress($email)
+    public static function getDomainOfEmailAddress($email)
     {
         if (preg_match('/^(.+?)@(.+?)$/', $email, $arrMatch))
             return array_pop($arrMatch);

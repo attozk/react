@@ -2,12 +2,12 @@
 namespace React\Smtp;
 
 use Evenement\EventEmitter;
-use React\Socket\SocketServerInterface;
+use React\Socket\Server as SocketServer;
 
 class Server extends EventEmitter
 {
     /**
-     * @var ServerInterface
+     * @var SocketServer
      */
     private $socket;
 
@@ -28,7 +28,7 @@ class Server extends EventEmitter
      */
     private $arrClients = array();
 
-    public function __construct(SocketServerInterface $socket, array $arrConfig = array())
+    public function __construct(SocketServer $socket, array $arrConfig = array())
     {
         $this->initConfig($arrConfig);
         $this->initSocket($socket);
@@ -46,31 +46,47 @@ class Server extends EventEmitter
     }
 
     /**
-     * Configures smtp and adds default configs as needed
-     * 
+     * Configures smtp and adds default configs as needed:
+     *
+     *  port: 25
+     *  listenIP: localhost
+     *  hostname: of the mail server
+     *  mailSizeMax: 35882577 in bytes maximum mail size (for SIZE extension)
+     *  mailAuths:  PLAIN
+     *      Other options are: LOGIN CRAM-MD5 (seperated by space) to be implemented by user
+     * relayHosts: array() of hosts which for which relay is supported
+     * supportedDomains: array() of supported domains that SMTP server is responsible for
+     *
      * @param $arrConfig
      */
     private function initConfig(&$arrConfig)
     {
-        // default configs
-        if (!isset($arrConfig['port']))
-            $arrConfig['port'] = 25;
-        if (!isset($arrConfig['listenIP']))
-            $arrConfig['listenIP'] = 'localhost';
-        if (!isset($arrConfig['hostname']))
-            $arrConfig['hostname'] = 'kabootar mail';
-        if (!isset($arrConfig['mailSizeMax']))
-            $arrConfig['mailSizeMax'] = 35882577;
+        $arrDefaultConfig = array(
+            'port' => 25,
+            'listenIP' => 'localhost',
+            'hostname' => 'phpreact-smtpd',
+            'mailSizeMax' => 35882577,
+            'mailAuths' => 'PLAIN',
+            'relayHosts' => array(),
+            'supportedDomains' => array()
+        );
 
-        self::$arrConfig = $arrConfig;        
+        foreach($arrDefaultConfig as $conf => $value)
+        {
+            if (!isset($arrConfig[$conf]))
+                $arrConfig[$conf] = $value;
+        }
+
+
+        self::$arrConfig = $arrConfig;
     }
 
     /**
      * Initializes socket
      * 
-     * @param object $socket instance of SocketServerInterface
+     * @param object $socket instance of SocketServer
      */
-    private function initSocket(SocketServerInterface &$socket)
+    private function initSocket(SocketServer &$socket)
     {
         $this->socket = $socket;
         $this->socket->listen(

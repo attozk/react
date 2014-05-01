@@ -2,8 +2,8 @@
 namespace React\Smtp;
 
 use Evenement\EventEmitter;
-use React\Socket\SocketServerInterface;
-use React\Helper\Emailper;
+use React\Socket\Connection as SocketConnection;
+use React\Smtp\Helper\Emailper;
 
 /**
  * Email Client class 
@@ -12,7 +12,7 @@ use React\Helper\Emailper;
 class Client extends EventEmitter
 {
     /**
-     * @var ConnectionInterface
+     * @var SocketConnection
      */
     private $conn;
     
@@ -29,7 +29,34 @@ class Client extends EventEmitter
      * @var
      */
     private $command;
-    
+
+    /**
+     * Which mode is the smtp connection is being used for (in this order):
+     *      send:
+     *          - When user is authenticated AND "MAIL FROM" is from supportedDomains
+     *
+     *     relay:
+     *          - when "MAIL FROM" is not from supportedDOmains AND
+     *            client's IP/hostname is a valid relayHosts
+     *
+      *     open-relay:
+     *          - when checkForRelay() is true
+     *
+     *      receive:
+     *          - When RCPT TO is a local user of supportedDomains
+     *
+     * This gets reset with RSET command
+     * @var mode
+     */
+    private $mode;
+
+    /**
+     * Could be user_id, email or anything unique which is set when user has authenticated
+     *
+     * @var
+     */
+    private $authId;
+
     /**
      * Session id
      */
@@ -64,12 +91,12 @@ class Client extends EventEmitter
      */
     private $respondDefaultMessage;
 
-    public function __construct(ConnectionInterface $conn)
+    public function __construct(SocketConnection $conn)
     {
         $this->conn = $conn;
         $this->sessionId = $this->generateSessionId();
         $this->respond(220, 'React SMTP Server');
-        $this->email = new emailContent();
+        $this->email = new Email();
     }
 
     /**
@@ -122,11 +149,16 @@ class Client extends EventEmitter
             $this->reset();
             $this->state = $this->command = 'EHLO';
 
-            $arrDefaultMessageSuccess = array(array('250-', 'at your service,' . $this->conn->getRemoteAddress()),
+            $arrDefaultMessageSuccess = array(array('250-', server::getConfig('hostname') . ' at your service, ' . $this->conn->getRemoteAddress()),
                                               array('250-', 'SIZE ' . server::getConfig('mailSizeMax')),
                                               array('250-', '8BITMIME'),
-                                              array('250-', 'ENHANCEDSTATUSCODES'),
-                                              array(250, 'CHUNKING'));
+                                              array('250-', 'ENHANCEDSTATUSCODES'));
+
+            // AUTH supported?
+            if ($auth = server::getConfig('mailAuths'))
+                $arrDefaultMessageSuccess[] = array('250-', trim('AUTH ' . $auth));
+
+            $arrDefaultMessageSuccess[] = array(250, 'CHUNKING');
         }
         /**
          *  MAIL @ http://tools.ietf.org/html/rfc5321#section-3.3
@@ -175,6 +207,8 @@ class Client extends EventEmitter
                 $arrParseFeed = Emailper::parseTOFeed($data);
                 if (is_array($arrParseFeed) && ($to = $arrParseFeed['email']))
                 {
+                    $this->checkForOpenRelay($this->email->getFrom(), $to);
+
                     $this->state = 'RCPT';
                     $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
 
@@ -254,7 +288,39 @@ class Client extends EventEmitter
         if ($mailCmd == 'QUIT' && $this->isReadable())
             $this->close();
     }
-    
+
+    /**
+     * Check for OpenRelay and sets Mode
+     *
+     * @url to prevent relay http://www.spamsoap.com/smtp-open-relay-test/
+     * @return true when client is trying to use as open relay
+     */
+    private function checkForOpenRelay($from, $to)
+    {
+        // check for OpenRelay
+        $isOpenRelay = true;
+        $domainOfFrom = Emailper::getDomainOfEmailAddress($from);
+        $domainOfTo = Emailper::getDomainOfEmailAddress($to);
+        $arrSupportedDomains = Server::getConfig('supportedDomains');
+
+        if (count($arrSupportedDomains))
+        {
+            if (in_array($arrSupportedDomains, $domainOfFrom))
+            {
+                // 1) Not OpenRelay when "MAIL FROM" is a supported domain and authenticated user
+                if ($this->authId)
+                {
+                    $this->mode = 'send';
+                    $openRelay = false;
+                }
+
+            }
+
+
+
+        return $openRelay;
+    }
+
     /**
      * Sends buffered response
      */
@@ -315,6 +381,45 @@ class Client extends EventEmitter
     }
 
     /**
+     * Sets the mode in which smtp is being used (send or receive or relay)
+     *
+     * @return mode
+     */
+    public function setMode($mode)
+    {
+        $this->mode = $mode;
+    }
+
+
+    /**
+     * Returns the mode in which smtp is being used (send or receive or relay)
+     *
+     * @return mode
+     */
+    public function getMode()
+    {
+        return $this->mode;
+    }
+
+    /**
+     * Sets authId
+     *
+     * @param $authId
+     */
+    public function setAuthId($authId)
+    {
+        $this->authId = $authId;
+    }
+
+    /**
+     * Returns authId
+     */
+    public function getAuthId()
+    {
+        return $this->authId;
+    }
+
+    /**
      * Sets session state
      *
      * @param $state
@@ -354,7 +459,7 @@ class Client extends EventEmitter
      */
     public function reset()
     {
-        $this->state = null;
+        $this->state = $this->mode = null;
         $this->email = new Email();
     }
 
