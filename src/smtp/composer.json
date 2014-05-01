@@ -1,0 +1,13 @@
+{
+    "name": "react/smtp",
+    "description": "Library for building an evented smtp server.",
+    "keywords": ["smtp"],
+    "license": "MIT",
+    "require": {
+        "php": ">=5.4.0",
+        "react/socket": "0.4.*"
+    },
+    "autoload": {
+        "psr-4": { "React\\Smtp\\": "" }
+    }
+}
