@@ -313,8 +313,9 @@ class Client extends EventEmitter
                     $this->mode = 'send';
                     $openRelay = false;
                 }
-
             }
+
+        }
 
 
 
