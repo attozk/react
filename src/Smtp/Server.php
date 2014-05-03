@@ -12,7 +12,7 @@ class Server extends EventEmitter
     private $socket;
 
     /** 
-     * smtp config - making it static so EmailConnection class can access config
+     * smtp config - making it static so Client class can access config
      * without passing config (duplicate) for each client.
      *
      * @var array
@@ -20,13 +20,6 @@ class Server extends EventEmitter
     private static $arrConfig;
     
     private $version = 0.1;
-
-    /**
-     * Array of connected clients
-     * 
-     * @var array
-     */
-    private $arrClients = array();
 
     public function __construct(SocketServer $socket, array $arrConfig = array())
     {
@@ -54,7 +47,7 @@ class Server extends EventEmitter
      *  mailSizeMax: 35882577 in bytes maximum mail size (for SIZE extension)
      *  mailAuths:  PLAIN
      *      Other options are: LOGIN CRAM-MD5 (seperated by space) to be implemented by user
-     * relayHosts: array() of hosts which for which relay is supported
+     * relayFromHosts: array() of hosts which for which relay is supported
      * supportedDomains: array() of supported domains that SMTP server is responsible for
      *
      * @param $arrConfig
@@ -67,7 +60,7 @@ class Server extends EventEmitter
             'hostname' => 'phpreact-smtpd',
             'mailSizeMax' => 35882577,
             'mailAuths' => 'PLAIN',
-            'relayHosts' => array(),
+            'relayFromHosts' => array(),
             'supportedDomains' => array()
         );
 
@@ -77,6 +70,8 @@ class Server extends EventEmitter
                 $arrConfig[$conf] = $value;
         }
 
+        #// supportedDomains to also include hostname
+        #array_push($arrConfig['supportedDomains'], $arrConfig['hostname']);
 
         self::$arrConfig = $arrConfig;
     }
@@ -102,11 +97,6 @@ class Server extends EventEmitter
         $this->socket->on('connection', function($conn)
         {
             $client = new Client($conn);
-            $sessionid = $client->getSessionId();
-
-            $this->arrClients[$sessionid] = array(
-                                                    'totalCommands' => 0,
-                                                    'timestamp' => time());
 
             $client->on('stream', function($client)
             {
@@ -115,31 +105,13 @@ class Server extends EventEmitter
 
             $conn->on('data', function($data) use($client)
             {
-                $sessionid = $client->getSessionId();
-                /*
-                if (isset($this->arrClients[$sessionid]))
-                {
-                    if (!isset($this->arrClients[$sessionid]['totalCommands']))
-                        $this->arrClients[$sessionid]['totalCommands'] = 0;
-
-                    $this->arrClients[$sessionid]['totalCommands']++;
-                }
-                */
-
                 $client->feed($data);
             });
 
             $conn->on('close', function($conn) use ($client)
             {
-                echo '------------------>' . $client->getEmail()->getRaw() . '<----------';
-                if ($client->isReadable())
-                    $client->close();
-
-                /*
-                $sessionid = $client->getSessionId();
-                if (isset($this->arrClients[$sessionid]))
-                    unset($this->arrClients[$sessionid]);
-                */
+                echo '--Session Log--' . "\n" . $client->getSessionLog(). '=====' . "\n";
+                echo '--EMAIL RAW--' . "\n" . $client->getEmail()->getRaw() . '=====' . "\n";
             });
         });
     }

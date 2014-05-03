@@ -12,6 +12,18 @@ use React\Smtp\Helper\Emailper;
 class Client extends EventEmitter
 {
     /**
+     * Maximum number of TOs, CCs & BCCs recipients allowed
+     * @url ref http://tools.ietf.org/html/rfc5321#section-4.5.3.1.10
+     * @url ref https://support.google.com/a/answer/166852?hl=en
+     */
+    const MAX_RECIPIENTS = 200;
+
+    /**
+     * Terminate connection after this many errors
+     */
+    const MAX_CLIENT_ERRORS = 20;
+
+    /**
      * @var SocketConnection
      */
     private $conn;
@@ -31,20 +43,7 @@ class Client extends EventEmitter
     private $command;
 
     /**
-     * Which mode is the smtp connection is being used for (in this order):
-     *      send:
-     *          - When user is authenticated AND "MAIL FROM" is from supportedDomains
-     *
-     *     relay:
-     *          - when "MAIL FROM" is not from supportedDOmains AND
-     *            client's IP/hostname is a valid relayHosts
-     *
-      *     open-relay:
-     *          - when checkForRelay() is true
-     *
-     *      receive:
-     *          - When RCPT TO is a local user of supportedDomains
-     *
+     * Which mode is the smtp connection is being used for INBOUND vs OUTBOUND vs RELAY:
      * This gets reset with RSET command
      * @var mode
      */
@@ -63,6 +62,11 @@ class Client extends EventEmitter
     private $sessionId;
 
     /**
+     * Session log
+     */
+    private $sessionLog;
+
+    /**
      * State of transaction (EHLO, MAIL, RCPT, DATA)
      *
      * For a given command, say MAIL the value of this variable will only be
@@ -78,6 +82,7 @@ class Client extends EventEmitter
      * To keep track of client errors during connection
      * This value is not reset with RSET or EHLO command
      *
+     * When it exceeds MAX_CLIENT_ERRORS errors, we force a connection shutdown..
      * @var int
      */
     private $totalClientErrors = 0;
@@ -118,212 +123,202 @@ class Client extends EventEmitter
      */
     public function feed($data)
     {
-        $this->sessionLog('C', $data);
+        $this->storeSessionLog('C', $data);
 
-        preg_match('/^(\w+)/', $data, $arrMatches);
-        $mailCmd = strtoupper(@array_pop($arrMatches));
-        $this->command = null;
-
-        // these are array of array
-        $arrDefaultMessageSuccess = $arrDefaultMessageError = null;
-
-        /**
-         *   RSET @ http://tools.ietf.org/html/rfc5321#section-4.1.1.5
-         *   Syntax -> rset = "RSET" CRLF
-         *   S: 250
-         */
-        if ($mailCmd == 'RSET' && preg_match('/^RSET\r\n$/i', $data))
+        if ($this->totalClientErrors < self::MAX_CLIENT_ERRORS)
         {
-            $this->reset();
-            $this->command = 'RSET';
-            $arrDefaultMessageSuccess = array(array(250, 'Flushed', '2.1.5'));
-        }
-        /**
-         *  S: 250
-         *   E: 504 (a conforming implementation could return this code only
-         *   in fairly obscure cases), 550, 502 (permitted only with an old-
-         *   style server that does not support EHLO)
-         */
-        else if ($mailCmd == 'EHLO' || $mailCmd == 'HELO')
-        {
-            $this->reset();
-            $this->state = $this->command = 'EHLO';
+            preg_match('/^(\w+)/', $data, $arrMatches);
+            $mailCmd = strtoupper(@array_pop($arrMatches));
+            $this->command = null;
+            $arrSupportedDomains = Server::getConfig('supportedDomains');
 
-            $arrDefaultMessageSuccess = array(array('250-', server::getConfig('hostname') . ' at your service, ' . $this->conn->getRemoteAddress()),
-                                              array('250-', 'SIZE ' . server::getConfig('mailSizeMax')),
-                                              array('250-', '8BITMIME'),
-                                              array('250-', 'ENHANCEDSTATUSCODES'));
+            // these are array of array
+            $arrDefaultMessageSuccess = $arrDefaultMessageError = null;
 
-            // AUTH supported?
-            if ($auth = server::getConfig('mailAuths'))
-                $arrDefaultMessageSuccess[] = array('250-', trim('AUTH ' . $auth));
-
-            $arrDefaultMessageSuccess[] = array(250, 'CHUNKING');
-        }
-        /**
-         *  MAIL @ http://tools.ietf.org/html/rfc5321#section-3.3
-         *   syntax is MAIL FROM:<reverse-path> [SP <mail-parameters> ] <CRLF>
-         *   with size extension is also valid @ MAIL FROM:<userx@test.ex> SIZE=1000000000
-         *   S: 250
-         *   E: 552, 451, 452, 550, 553, 503, 455, 555
-         */
-        else if ($mailCmd == 'MAIL')
-        {
-            $this->command = 'MAIL';
-            // check if we are in valid session state
-            if ($this->state == 'EHLO')
+            /**
+             *   RSET @ http://tools.ietf.org/html/rfc5321#section-4.1.1.5
+             *   Syntax -> rset = "RSET" CRLF
+             *   S: 250
+             */
+            if (preg_match('/^RSET\r\n$/i', $data) && $this->state != 'DATA-INCOMING')
             {
-                $arrParseFeed = Emailper::parseFROMFeed($data);
-                if (is_array($arrParseFeed) && ($from = $arrParseFeed['email']))
-                {
-                    $this->state = 'MAIL';
-                    $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
+                $this->reset();
+                $this->command = 'RSET';
+                $arrDefaultMessageSuccess = array(array(250, 'Flushed', '2.1.5'));
+            }
+            /**
+             *  S: 250
+             *   E: 504 (a conforming implementation could return this code only
+             *   in fairly obscure cases), 550, 502 (permitted only with an old-
+             *   style server that does not support EHLO)
+             */
+            else if ($mailCmd == 'EHLO' || $mailCmd == 'HELO')
+            {
+                $this->reset();
+                $this->state = $this->command = 'EHLO';
 
-                    /**
-                     * Let the "stream" emit decide what needs to happen here
-                     */
-                    $this->email->storeRawHeader($data);
-                    $this->email->setHeaderFrom($from);
+                $arrDefaultMessageSuccess = array(array('250-', server::getConfig('hostname') . ' at your service, ' . $this->conn->getRemoteAddress()),
+                                                  array('250-', 'SIZE ' . server::getConfig('mailSizeMax')),
+                                                  array('250-', '8BITMIME'),
+                                                  array('250-', 'ENHANCEDSTATUSCODES'));
+
+                // AUTH supported?
+                if ($auth = server::getConfig('mailAuths'))
+                    $arrDefaultMessageSuccess[] = array('250-', trim('AUTH ' . $auth));
+
+                $arrDefaultMessageSuccess[] = array(250, 'CHUNKING');
+            }
+            /**
+             *  MAIL @ http://tools.ietf.org/html/rfc5321#section-3.3
+             *   syntax is MAIL FROM:<reverse-path> [SP <mail-parameters> ] <CRLF>
+             *   with size extension is also valid @ MAIL FROM:<userx@test.ex> SIZE=1000000000
+             *   S: 250
+             *   E: 552, 451, 452, 550, 553, 503, 455, 555
+             */
+            else if ($mailCmd == 'MAIL')
+            {
+                $this->command = 'MAIL';
+                // check if we are in valid session state
+                if ($this->state == 'EHLO')
+                {
+                    $arrParseFeed = Emailper::parseFROMFeed($data);
+                    if (is_array($arrParseFeed) && ($from = $arrParseFeed['email']))
+                    {
+                        $this->state = 'MAIL';
+                        $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
+
+                        /**
+                         * Let the "stream" emit decide what needs to happen here
+                         */
+                        $this->email->storeRawHeader($data);
+                        $this->email->setHeaderFrom($from);
+                    }
+                    else
+                        $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
+                }
+                // EHLO not initialized
+                else if (!$this->state)
+                    $arrDefaultMessageError = array(array(503, 'EHLO/HELO first', '5.5.1'));
+                else
+                    $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
+            }
+            /**
+              *  S: 250, 251 (but see Section 3.4 for discussion of 251 and 551)
+              *  E: 550, 551, 552, 553, 450, 451, 452, 503, 455, 555
+             */
+            else if ($mailCmd == 'RCPT')
+            {
+                $this->command = 'RCPT';
+                // check if we are in valid session state
+                if ($this->state == 'MAIL' || $this->state == 'RCPT')
+                {
+                    if ($this->email->getTotalRecipients() < self::MAX_RECIPIENTS)
+                    {
+                        $arrParseFeed = Emailper::parseTOFeed($data);
+                        if (is_array($arrParseFeed) && ($to = $arrParseFeed['email']))
+                        {
+                            // prevent open relay
+                            if ($this->authId || Emailper::isSupportedEmailAddress($to, $arrSupportedDomains))
+                            {
+                                $this->state = 'RCPT';
+                                $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
+
+                                /**
+                                 * Let the "stream" emit decide what needs to happen here
+                                 */
+                                $this->email->storeRawHeader($data);
+                                $this->email->setHeaderTos($to);
+                            }
+                            else
+                                $arrDefaultMessageError = array(array(550, 'Unable to relay for '. $to, '5.7.1'));
+                        }
+                        else
+                            $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
+                    }
+                    else
+                        $arrDefaultMessageError = array(array(552, 'Too many recipients', '5.5.3'));
                 }
                 else
-                    $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
+                    $arrDefaultMessageError = array(array(503, 'Mail first', '5.5.1'));
             }
-            // EHLO not initialized
-            else if (!$this->state)
-                $arrDefaultMessageError = array(array(503, 'EHLO/HELO first', '5.5.1'));
-            else
-                $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
-        }
-        /**
-          *  S: 250, 251 (but see Section 3.4 for discussion of 251 and 551)
-          *  E: 550, 551, 552, 553, 450, 451, 452, 503, 455, 555
-         */
-        else if ($mailCmd == 'RCPT')
-        {
-            $this->command = 'RCPT';
-            // check if we are in valid session state
-            if ($this->state == 'MAIL' || $this->state == 'RCPT')
+            /**
+             *  I: 354 -> data -> S: 250
+             *          E: 552, 554, 451, 452
+             *          E: 450, 550 (rejections for policy reasons)
+             *    E: 503, 554
+             */
+            else if ($mailCmd == 'DATA')
             {
-                $arrParseFeed = Emailper::parseTOFeed($data);
-                if (is_array($arrParseFeed) && ($to = $arrParseFeed['email']))
+                $this->command = 'DATA';
+                //$this->setMode();
+
+                // check if we are in valid session state
+                if ($this->state == 'RCPT')
                 {
-                    $this->checkForOpenRelay($this->email->getFrom(), $to);
-
-                    $this->state = 'RCPT';
-                    $arrDefaultMessageSuccess = array(array(250, 'OK', '2.1.0'));
-
-                    /**
-                     * Let the "stream" emit decide what needs to happen here
-                     */
-                    $this->email->storeRawHeader($data);
-                    $this->email->setHeaderTo($to);
+                    $this->state = 'DATA';
+                    $arrDefaultMessageSuccess = array(array(354, 'Go ahead'));
                 }
+                // EHLO not initialized
+                else if (!$this->state)
+                    $arrDefaultMessageError = array(array(503, 'EHLO/HELO first', '5.5.1'));
                 else
-                    $arrDefaultMessageError = array(array(503, 'Syntax error', '5.5.2'));
+                    $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
+            }
+            // we are getting data
+            else if ($this->state == 'DATA')
+            {
+                $this->command = $this->state = 'DATA-INCOMING';
+                $this->email->storeRawBody($data);
+                $this->email->setBody($data);
+            }
+            // we have got all the data
+            else if ($this->state == 'DATA-INCOMING')
+            {
+                // this is end of email
+                if (preg_match('/^\.\r\n$/', $data))
+                {
+                    $this->command = $this->state = 'DATA-END';
+                    $arrDefaultMessageSuccess = array(array(250, 'OK'));
+                }
+            }
+            else if ($mailCmd == 'QUIT')
+            {
+                $this->command = $this->state = 'QUIT';
+                $arrDefaultMessageSuccess = array(array(221, 'closing connection', '2.0.0'));
             }
             else
-                $arrDefaultMessageError = array(array(503, 'Mail first', '5.5.1'));
-        }
-        /**
-         *  I: 354 -> data -> S: 250
-         *          E: 552, 554, 451, 452
-         *          E: 450, 550 (rejections for policy reasons)
-         *    E: 503, 554
-         */
-        else if ($mailCmd == 'DATA')
-        {
-            $this->command = 'DATA';
+                $arrDefaultMessageError = array(array(500, 'Invalid command', '5.5.1'));
 
-            // check if we are in valid session state
-            if ($this->state == 'RCPT')
+            // there were errors?
+            if (is_array($arrDefaultMessageError))
+                $this->totalClientErrors++;
+
+            // let others implement their own logic (via emit "stream")
+            $this->respondDefaultMessage = (array) $arrDefaultMessageSuccess + (array) $arrDefaultMessageError;
+
+            // notify so one can implement their own handlers
+            $this->emit('stream', array($this));
+
+            // if steam emit was not overwritten, proceed with default response
+            $this->respondDefault();
+
+            // close stream
+            if ($mailCmd == 'QUIT')
             {
-                $this->state = 'DATA';
-                $arrDefaultMessageSuccess = array(array(354, 'Go ahead'));
-            }
-            // EHLO not initialized
-            else if (!$this->state)
-                $arrDefaultMessageError = array(array(503, 'EHLO/HELO first', '5.5.1'));
-            else
-                $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
-        }
-        // we are getting data
-        else if ($this->state == 'DATA')
-        {
-            $this->command = $this->state = 'DATA-INCOMING';
-            $this->email->storeRawBody($data);
-            $this->email->setBody($data);
-        }
-        // we have got all the data
-        else if ($this->state == 'DATA-INCOMING')
-        {
-            // this is end of email
-            if (preg_match('/^\.\r\n$/', $data))
-            {
-                $this->command = $this->state = 'DATA-END';
-                $arrDefaultMessageSuccess = array(array(250, 'OK'));
+                if ($this->isConnectionOpen())
+                    $this->close();
             }
         }
-        else if ($mailCmd == 'QUIT')
-        {
-            $this->command = $this->state = 'QUIT';
-            $arrDefaultMessageSuccess = array(array(221, 'closing connection', '2.0.0'));
-        }
+        // too many errors
         else
-            $arrDefaultMessageError = array(array(503, 'Invalid command', '5.5.1'));
-
-        // there were errors?
-        if (is_array($arrDefaultMessageError))
-            $this->totalClientErrors++;
-
-        // let others implement their own logic (via emit "stream")
-        $this->respondDefaultMessage = (array) $arrDefaultMessageSuccess + (array) $arrDefaultMessageError;
-
-        // notify so one can implement their own handlers
-        $this->emit('stream', array($this));
-
-        // if steam emit was not overwritten, proceed with default response
-        $this->respondDefault();
-
-        // close stream
-        if ($mailCmd == 'QUIT' && $this->isReadable())
-            $this->close();
-    }
-
-    /**
-     * Check for OpenRelay and sets Mode
-     *
-     * @url to prevent relay http://www.spamsoap.com/smtp-open-relay-test/
-     * @return true when client is trying to use as open relay
-     */
-    private function checkForOpenRelay($from, $to)
-    {
-        // check for OpenRelay
-        $isOpenRelay = true;
-        $domainOfFrom = Emailper::getDomainOfEmailAddress($from);
-        $domainOfTo = Emailper::getDomainOfEmailAddress($to);
-        $arrSupportedDomains = Server::getConfig('supportedDomains');
-
-        if (count($arrSupportedDomains))
         {
-            if (in_array($arrSupportedDomains, $domainOfFrom))
-            {
-                // 1) Not OpenRelay when "MAIL FROM" is a supported domain and authenticated user
-                if ($this->authId)
-                {
-                    $this->mode = 'send';
-                    $openRelay = false;
-                }
-            }
-
+            $this->respond(421, 'Too many errors on this connection---closing', '4.5.2');
+            $this->close();
         }
-
-
-
-        return $openRelay;
     }
 
     /**
-     * Sends buffered response
+     * Sends default response
      */
     private function respondDefault()
     {
@@ -360,7 +355,7 @@ class Client extends EventEmitter
 
         $message = $code . $extendedCode . Emailper::messageln($message);
 
-        $this->sessionLog('S', $message);
+        $this->storeSessionLog('S', $message);
 
         return $this->conn->write($message);
     }
@@ -382,15 +377,68 @@ class Client extends EventEmitter
     }
 
     /**
-     * Sets the mode in which smtp is being used (send or receive or relay)
-     *
-     * @return mode
+     * Get session log
      */
-    public function setMode($mode)
+    public function getSessionLog()
     {
-        $this->mode = $mode;
+        return $this->sessionLog;
     }
 
+    /**
+     * Store session log
+     *
+     * @param string $who (S)erver, (C)lient
+     */
+    private function storeSessionLog($who, $data)
+    {
+        $this->sessionLog .= $who .': ' .$data;
+
+        echo "$who: $data";
+    }
+
+    /**
+     * Check for OpenRelay and sets Mode
+     *
+     * @url to prevent relay http://www.spamsoap.com/smtp-open-relay-test/
+     * @return true when client is trying to use as open relay
+     */
+    private function setMode()
+    {
+        // check for OpenRelay
+        $isOpenRelay = true;
+        $arrRelayFromHosts = Server::getConfig('relayFromHosts');
+
+
+        $from = $this->email->getFrom();
+        $domainOfFrom = Emailper::getDomainOfEmailAddress($from);
+
+
+        /*
+         *
+        if (count($arrSupportedDomains))
+        {
+            if (in_array($arrSupportedDomains, $domainOfFrom))
+            {
+                // Not OpenRelay when "MAIL FROM" is a supported domain and authenticated user
+                if ($this->authId)
+                {
+                    $this->mode = 'OUTBOUND';
+                    $openRelay = false;
+                }
+            }
+
+        }
+
+        // check for relay
+        if (in_array($arrRelayFromHosts, $this->conn->getRemoteAddress()))
+        {
+
+        }
+
+
+        return $openRelay;
+        */
+    }
 
     /**
      * Returns the mode in which smtp is being used (send or receive or relay)
@@ -467,7 +515,7 @@ class Client extends EventEmitter
     /**
      * check if stream is readable
      */
-    public function isReadable()
+    public function isConnectionOpen()
     {
         return $this->conn->isReadable();
     }
@@ -478,15 +526,5 @@ class Client extends EventEmitter
     public function close()
     {
         return $this->conn->close();
-    }
-
-    /**
-     * log transaction for debugging
-     *
-     * @param string $who (S)erver, (C)lient
-     */
-    private function sessionLog($who, $data)
-    {
-        echo "$who: $data";
     }
 }

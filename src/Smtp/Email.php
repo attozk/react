@@ -49,7 +49,7 @@ class Email
     /**
      * Stores RCPT TO:<$email> in structured way
      */
-    public function setHeaderTo($email)
+    public function setHeaderTos($email)
     {
         $this->arrHeaderarrToEmails[$email] = array(
             'email' => $email
@@ -59,9 +59,17 @@ class Email
     /**
      * Returns array of arrays of RCPT TO:<$email>
      */
-    public function getTo()
+    public function getTos()
     {
         return $this->arrHeaderarrToEmails;
+    }
+
+    /**
+     * Get total Tos + CCs + Bccs
+     */
+    public function getTotalRecipients()
+    {
+        return count($this->arrHeaderarrToEmails);
     }
 
     /**

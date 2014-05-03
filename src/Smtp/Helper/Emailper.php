@@ -72,7 +72,27 @@ class Emailper
     }
 
     /**
-     * Returns string with line ending
+     * Returns true when an email address is valid
+     */
+    public static function validateEmailAddress($email)
+    {
+        return filter_var($email, FILTER_VALIDATE_EMAIL);
+    }
+
+    /**
+     * Checks if the email address is from supported domain
+     *
+     * @param string $email
+     * @param array $arrSupportedDomains array of supported domain
+     */
+    public static function isSupportedEmailAddress($email, $arrSupportedDomains)
+    {
+        $domainOfEmail = self::getDomainOfEmailAddress($email);
+
+        return $domainOfEmail && in_array($domainOfEmail, $arrSupportedDomains);
+    }
+
+    /** Returns string with line ending
      *
      * @param $str
      * @param string $lineEnd
@@ -80,13 +100,5 @@ class Emailper
     public static function messageln($str, $lineEnd = "\r\n")
     {
         return $str . $lineEnd;
-    }
-
-    /**
-     * Returns true when an email address is valid
-     */
-    public static function validateEmailAddress($email)
-    {
-        return filter_var($email, FILTER_VALIDATE_EMAIL);
     }
 }
