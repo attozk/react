@@ -96,7 +96,7 @@ class Client extends EventEmitter
      */
     private $respondDefaultMessage;
 
-    public function __construct(SocketConnection $conn)
+    public function __construct(SocketConnection &$conn)
     {
         $this->conn = $conn;
         $this->sessionId = $this->generateSessionId();
@@ -393,7 +393,7 @@ class Client extends EventEmitter
     {
         $this->sessionLog .= $who .': ' .$data;
 
-        echo "$who: $data";
+        //echo "$who: $data";
     }
 
     /**
@@ -404,40 +404,6 @@ class Client extends EventEmitter
      */
     private function setMode()
     {
-        // check for OpenRelay
-        $isOpenRelay = true;
-        $arrRelayFromHosts = Server::getConfig('relayFromHosts');
-
-
-        $from = $this->email->getFrom();
-        $domainOfFrom = Emailper::getDomainOfEmailAddress($from);
-
-
-        /*
-         *
-        if (count($arrSupportedDomains))
-        {
-            if (in_array($arrSupportedDomains, $domainOfFrom))
-            {
-                // Not OpenRelay when "MAIL FROM" is a supported domain and authenticated user
-                if ($this->authId)
-                {
-                    $this->mode = 'OUTBOUND';
-                    $openRelay = false;
-                }
-            }
-
-        }
-
-        // check for relay
-        if (in_array($arrRelayFromHosts, $this->conn->getRemoteAddress()))
-        {
-
-        }
-
-
-        return $openRelay;
-        */
     }
 
     /**
@@ -525,6 +491,8 @@ class Client extends EventEmitter
      */
     public function close()
     {
-        return $this->conn->close();
+        $this->emit('end');
+        $this->removeAllListeners();
+        $this->conn->end();
     }
 }

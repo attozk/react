@@ -10,24 +10,47 @@
 ## Usage
 
     $loop = \React\EventLoop\Factory::create();
-    $socket = new \React\Socket\Server($loop);
-
     $arrConfig = array(
         'port' => 25,
         'listenIP' => '0.0.0.0',
-        'hostname' => 'server.com',
-        'maxMailSize' => 10000); // in bytes
+        'hostname' => 'myserver.com',
+        'mailSizeMax' => 1000,
+        'mailAuths' => 'PLAIN LOGIN',
+        'relayFromHosts' => array('999.99.99.99'), // using invalid IP for demonstration
+        'supportedDomains' => array('myserver2.com', 'myserver2.com'));
 
-    $smtp = new \React\Smtp\Server($socket, $arrConfig);
+    $smtp = new \React\Smtp\Server($loop, $arrConfig);
+
+    $smtp->on('connection', function($conn)
+    {
+    });
 
     $smtp->on('MAIL', function($email)
     {
-        if ($email->isValidCommand()) { /*Validate from email address*/ }
+        if ($email->isValidCommand())
+        {
+            //$sender->isValid();
+        }
+    });
+
+    $smtp->on('RCPT', function($email)
+    {
+        if ($email->isValidCommand())
+        {
+            //$recipient->isValid();
+        }
     });
 
     $smtp->on('DATA-END', function($email)
     {
         $raw = $email->getEmail()->getRaw();
     });
+
+    $smtp->on('CLOSE', function($email)
+    {
+        echo '--Session Log--' . "\n" . $email->getSessionLog(). '=====' . "\n";
+        echo '--EMAIL RAW--' . "\n" . $email->getEmail()->getRaw() . '=====' . "\n";
+    });
+
 
     $loop->run();

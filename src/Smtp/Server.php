@@ -1,15 +1,21 @@
 <?php
 namespace React\Smtp;
 
-use Evenement\EventEmitter;
+//use Evenement\EventEmitter;
+use React\EventLoop\LoopInterface;
 use React\Socket\Server as SocketServer;
 
-class Server extends EventEmitter
+class Server extends SocketServer //EventEmitter
 {
     /**
      * @var SocketServer
      */
-    private $socket;
+    //private $socket;
+
+    /**
+     * @var LoopInterface
+     */
+    //private $loop;
 
     /** 
      * smtp config - making it static so Client class can access config
@@ -21,19 +27,19 @@ class Server extends EventEmitter
     
     private $version = 0.1;
 
-    public function __construct(SocketServer $socket, array $arrConfig = array())
+    public function __construct(LoopInterface $loop, array $arrConfig = array())
     {
+        parent::__construct($loop);
         $this->initConfig($arrConfig);
-        $this->initSocket($socket);
+        $this->initSocket();
         $this->initEvents();
-        
-        /*
-        $this->socket->addPeriodicTimer(50, function ()
-        {
-            $memory = memory_get_usage() / 1024;
-            $formatted = number_format($memory, 3).'K';
-            echo date('Y-m-d') . ' -> ' . "Current memory usage: {$formatted}\n";
 
+        /*
+         *
+        $self =& $this;
+        $loop->addPeriodicTimer(30, function () use($self)
+        {
+            printr($self);
         });
         */
     }
@@ -81,12 +87,11 @@ class Server extends EventEmitter
      * 
      * @param object $socket instance of SocketServer
      */
-    private function initSocket(SocketServer &$socket)
+    private function initSocket(/*SocketServer $socket*/)
     {
-        $this->socket = $socket;
-        $this->socket->listen(
-                                $this->getConfig('port'),
-                                $this->getConfig('listenIP'));        
+        $this->listen(
+                        $this->getConfig('port'),
+                        $this->getConfig('listenIP'));
     }
 
     /**
@@ -94,7 +99,7 @@ class Server extends EventEmitter
      */
     private function initEvents()
     {
-        $this->socket->on('connection', function($conn)
+        $this->on('connection', function($conn)
         {
             $client = new Client($conn);
 
@@ -110,8 +115,9 @@ class Server extends EventEmitter
 
             $conn->on('close', function($conn) use ($client)
             {
-                echo '--Session Log--' . "\n" . $client->getSessionLog(). '=====' . "\n";
-                echo '--EMAIL RAW--' . "\n" . $client->getEmail()->getRaw() . '=====' . "\n";
+                $client->removeAllListeners();
+                $this->emit('CLOSE', array($client));
+                unset($client);
             });
         });
     }
